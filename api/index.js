@@ -14,9 +14,9 @@ app.use(express.json());
 
 // PostgreSQL connection pool
 const pool = new Pool({
-  host: process.env.PGHOST,
-  port: Number(process.env.PGPORT),
-  user: process.env.PGUSER,
+  host:     process.env.PGHOST,
+  port:     Number(process.env.PGPORT),
+  user:     process.env.PGUSER,
   password: process.env.PGPASSWORD,
   database: process.env.PGDATABASE,
 });
@@ -56,10 +56,10 @@ app.get('/ctgov', async (req, res) => {
       pageSize: 20,
       countTotal: 'true',
     };
-    if (condition) params['query.cond'] = condition;
-    if (status) params['filter.overallStatus'] = String(status).toUpperCase().replace(/ /g, '_');
-    if (location) params['query.locn'] = location;
-    if (pageToken) params.pageToken = pageToken;
+    if (condition)     params['query.cond']           = condition;
+    if (status)        params['filter.overallStatus'] = String(status).toUpperCase().replace(/ /g, '_');
+    if (location)      params['query.locn']           = location;
+    if (pageToken)     params.pageToken               = pageToken;
 
     // Fetch from ClinicalTrials.gov v2
     const ctUrl = 'https://clinicaltrials.gov/api/v2/studies';
@@ -67,35 +67,35 @@ app.get('/ctgov', async (req, res) => {
 
     // Map to simplified structure
     const studies = (response.data.studies || []).map(item => {
-      const ps = item.protocolSection || {};
-      const idMod = ps.identificationModule || {};
-      const statusMod = ps.statusModule || {};
-      const condMod = ps.conditionsModule || {};
-      const locMod = ps.contactsLocationsModule || {};
+      const ps        = item.protocolSection           || {};
+      const idMod     = ps.identificationModule        || {};
+      const statusMod = ps.statusModule                || {};
+      const condMod   = ps.conditionsModule            || {};
+      const locMod    = ps.contactsLocationsModule     || {};
 
       return {
-        id: idMod.nctId,
-        title: idMod.officialTitle || idMod.briefTitle || null,
-        status: statusMod.overallStatus,
-        conditions: condMod.conditions || [],
-        locations:
-          (locMod.locations || [])
-            .map(l => l.locationFacility || l.locationCity || l.locationCountry)
-            .filter(Boolean) || [],
-        startDate: statusMod.startDate,
+        id:                     idMod.nctId,
+        title:                  idMod.officialTitle || idMod.briefTitle || null,
+        status:                 statusMod.overallStatus,
+        conditions:             condMod.conditions || [],
+        locations:              (locMod.locations || [])
+                                  .map(l => l.locationFacility || l.locationCity || l.locationCountry)
+                                  .filter(Boolean),
+        startDate:              statusMod.startDate,
+        lastUpdateSubmitDate:   statusMod.lastUpdateSubmitDate || null,  // ← new field
       };
     });
 
     // Return total and next page token
     res.json({
-      totalCount: response.data.totalCount,
-      nextPageToken: response.data.nextPageToken || null,
+      totalCount:     response.data.totalCount,
+      nextPageToken:  response.data.nextPageToken || null,
       studies,
     });
   } catch (err) {
     console.error('CT.gov API error:', err.response?.status, err.response?.data || err.message);
     res.status(500).json({
-      error: 'Failed to fetch from ClinicalTrials.gov',
+      error:   'Failed to fetch from ClinicalTrials.gov',
       details: err.message,
     });
   }

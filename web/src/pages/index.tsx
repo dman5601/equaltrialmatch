@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback, useRef, ChangeEvent } from 'react';
+import { useEffect, useState, useCallback, useRef, ChangeEvent, useMemo } from 'react';
 import { useRouter } from 'next/router';
 
 interface Study {
@@ -7,6 +7,7 @@ interface Study {
   status: string;
   conditions: string[];
   locations: string[];
+  lastUpdateSubmitDate: string | null;   // ← we pulled this in from the API
 }
 
 // Raw API response shape for type narrowing
@@ -35,6 +36,19 @@ export default function HomePage() {
   const [nextToken, setNextToken] = useState<string | null>(null);
   const [totalCount, setTotalCount] = useState<number | null>(null);
   const [currentCount, setCurrentCount] = useState<number>(0);
+
+  // ### NEW: sort studies by lastUpdateSubmitDate desc
+  const sortedStudies = useMemo(() => {
+    return [...studies].sort((a, b) => {
+      const aTime = a.lastUpdateSubmitDate
+        ? new Date(a.lastUpdateSubmitDate).getTime()
+        : 0;
+      const bTime = b.lastUpdateSubmitDate
+        ? new Date(b.lastUpdateSubmitDate).getTime()
+        : 0;
+      return bTime - aTime;
+    });
+  }, [studies]);
 
   // Ref for infinite scroll sentinel
   const loadMoreRef = useRef<HTMLDivElement | null>(null);
@@ -127,7 +141,7 @@ export default function HomePage() {
   return (
     <>
       {/* Fixed counter */}
-      {studies.length > 0 && totalCount !== null && (
+      {sortedStudies.length > 0 && totalCount !== null && (
         <div className="fixed top-0 left-0 w-full bg-white z-20 border-b">
           <div className="container mx-auto px-6 py-2 text-sm text-gray-600">
             Showing 1–{currentCount} of {totalCount} results
@@ -172,7 +186,7 @@ export default function HomePage() {
         )}
 
         {/* No-results message */}
-        {!loading && !error && studies.length === 0 && (
+        {!loading && !error && sortedStudies.length === 0 && (
           <div className="py-8 text-center text-gray-500">
             No trials found for your criteria.
           </div>
@@ -180,7 +194,7 @@ export default function HomePage() {
 
         {/* Study List or skeletons */}
         <ul className="space-y-4">
-          {loading && studies.length === 0
+          {loading && sortedStudies.length === 0
             ? // Skeleton placeholders
               Array.from({ length: 5 }).map((_, i) => (
                 <li key={i} className="animate-pulse border p-4 rounded shadow-sm bg-gray-100">
@@ -191,12 +205,25 @@ export default function HomePage() {
                   </div>
                 </li>
               ))
-            : studies.map(s => (
+            : sortedStudies.map(s => (
                 <li key={s.id} className="border p-4 rounded shadow-sm">
                   <h2 className="text-xl font-semibold">{s.title}</h2>
                   <p><strong>Status:</strong> {s.status}</p>
                   <p><strong>Conditions:</strong> {s.conditions.join(', ')}</p>
                   <p><strong>Locations:</strong> {s.locations.join(', ') || 'N/A'}</p>
+
+                  {/* last‐updated */}
+                  {s.lastUpdateSubmitDate && (
+                    <p className="mt-2 text-xs text-gray-500">
+                      Last updated:{' '}
+                      {new Date(s.lastUpdateSubmitDate).toLocaleDateString('en-US', {
+                        year:  'numeric',
+                        month: 'short',
+                        day:   'numeric',
+                      })}
+                    </p>
+                  )}
+
                   <button
                     onClick={() => router.push(`/studies/${s.id}`)}
                     className="mt-2 p-2 bg-indigo-600 text-white rounded"
