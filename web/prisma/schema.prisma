@@ -8,10 +8,24 @@ generator client {
 }
 
 model User {
-  id          String       @id @default(cuid())
-  email       String       @unique
-  password    String
-  savedTrials SavedTrial[]
+  id           String       @id @default(cuid())
+  email        String       @unique
+  password     String
+  savedTrials  SavedTrial[]
+  profile      Profile?     // ← implicit one-to-one
+}
+
+model Profile {
+  id        String   @id @default(cuid())
+  userId    String   @unique
+  user      User     @relation(fields: [userId], references: [id])
+  zip       String?
+  radius    Int?
+  age       Int?
+  gender    String?
+  phase     String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 }
 
 model SavedTrial {
@@ -20,5 +34,6 @@ model SavedTrial {
   userId    String
   nctId     String
   createdAt DateTime @default(now())
+
   @@unique([userId, nctId])
 }
