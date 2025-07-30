@@ -2,8 +2,10 @@
 import { useSession, signIn } from "next-auth/react";
 import { useState, useEffect, FormEvent } from "react";
 import Link from "next/link";
+import TrialCard, { Trial as CardTrial } from "../components/TrialCard";
 
-type Trial = {
+// Raw API response shape
+interface RawTrial {
   id: string;
   title: string;
   status: string;
@@ -14,218 +16,140 @@ type Trial = {
   phase: string[];
   ageRange: { min: string; max: string };
   gender: string | null;
-};
+}
 
 export default function SearchPage() {
   const { status } = useSession();
-  const [trials, setTrials]     = useState<Trial[]>([]);
-  const [loading, setLoading]   = useState(false);
-  const [error, setError]       = useState<string | null>(null);
+  const [trials, setTrials] = useState<(CardTrial & { updated: string })[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
-  // Filter state
-  const [condition, setCondition]   = useState("");
-  const [statusFilter, setStatusFilter] = useState("");
-  const [zip, setZip]               = useState("");
-  const [radius, setRadius]         = useState<number | "">("");
-  const [age, setAge]               = useState<number | "">("");
-  const [gender, setGender]         = useState("");
-  const [phase, setPhase]           = useState("");
+  // Search fields: only Condition and ZIP code
+  const [condition, setCondition] = useState("");
+  const [zip, setZip] = useState("");
 
-  // Load saved profile on mount
+  // Load saved profile on mount (ZIP only)
   useEffect(() => {
     if (status === "authenticated") {
       fetch("/api/profile")
-        .then((res) => res.json())
-        .then((profile) => {
+        .then(res => res.json())
+        .then(profile => {
           if (profile) {
             setZip(profile.zip || "");
-            setRadius(profile.radius ?? "");
-            setAge(profile.age ?? "");
-            setGender(profile.gender || "");
-            setPhase(profile.phase || "");
           }
         });
     }
   }, [status]);
 
-  // Fetch trials helper
+  // Fetch trials with sorting and mapping
   async function fetchTrials() {
     setLoading(true);
     setError(null);
 
     const params = new URLSearchParams();
-    if (condition)     params.append("condition", condition);
-    if (statusFilter)  params.append("status", statusFilter);
-    if (zip)           params.append("location", zip);
-    if (radius !== "") params.append("radius", String(radius));
-    if (age !== "")    params.append("age", String(age));
-    if (gender)        params.append("gender", gender);
-    if (phase)         params.append("phase", phase);
+    if (condition) params.append("condition", condition);
+    if (zip) params.append("location", zip);
 
     try {
       const res = await fetch(`/api/ctgov?${params.toString()}`);
       if (!res.ok) throw new Error(await res.text());
       const data = await res.json();
-      setTrials(data.studies || []);
+
+      // Sort by most recent update first
+      const raw: RawTrial[] = data.studies || [];
+      raw.sort((a, b) => {
+        const aTime = new Date(a.lastUpdateSubmitDate || a.startDate).getTime();
+        const bTime = new Date(b.lastUpdateSubmitDate || b.startDate).getTime();
+        return bTime - aTime;
+      });
+
+      // Normalize to CardTrial shape
+      const mapped = raw.map(t => ({
+        nctId: t.id,
+        briefTitle: t.title,
+        locations: t.locations.map(({ city, state, country }) => ({ city, state, country })),
+        summary: t.conditions.join(", "),
+        badge: undefined,
+        status: t.status,
+        phase: t.phase,
+        ageRange: t.ageRange,
+        keyEligibility: {},
+        enrollment: undefined,
+        updated: t.lastUpdateSubmitDate || t.startDate,
+      })) as (CardTrial & { updated: string })[];
+
+      setTrials(mapped);
     } catch (err: unknown) {
-      const message = err instanceof Error ? err.message : "Unknown error";
-      console.error(message);
-      setError(message);
+      const msg = err instanceof Error ? err.message : "Unknown error";
+      console.error(msg);
+      setError(msg);
     } finally {
       setLoading(false);
     }
   }
 
-  // On filter submit: save profile then run search
+  // Handle search form submit
   const handleFilters = async (e: FormEvent) => {
     e.preventDefault();
     if (status === "authenticated") {
       await fetch("/api/profile", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ zip, radius, age, gender, phase }),
+        body: JSON.stringify({ zip }),
       });
     }
     fetchTrials();
   };
 
-  // Require login
+  // Require login for access
   if (status === "unauthenticated") {
     return (
       <div className="p-8 text-center space-y-4">
         <p>Please sign in to search trials.</p>
-        <button className="btn" onClick={() => signIn()}>
-          Sign In
-        </button>
+        <button className="btn" onClick={() => signIn()}>Sign In</button>
       </div>
     );
   }
 
-  // Render search form + results
   return (
     <div className="max-w-4xl mx-auto p-6">
-      <Link href="/" className="text-blue-500 mb-4 block">
-        ← Back to Home
-      </Link>
+      <Link href="/" className="text-blue-500 mb-4 block">← Back to Home</Link>
       <h1 className="text-2xl font-bold mb-4">Search Clinical Trials</h1>
-      <form onSubmit={handleFilters} className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
-        {/* Condition */}
-        <div>
-          <label>Condition</label>
+
+      {/* Search bar: Condition + ZIP */}
+      <form onSubmit={handleFilters} className="flex gap-4 mb-6">
+        <div className="flex-1">
+          <label htmlFor="condition" className="sr-only">Condition</label>
           <input
+            id="condition"
             type="text"
             value={condition}
-            onChange={(e) => setCondition(e.target.value)}
+            onChange={e => setCondition(e.target.value)}
             className="input w-full"
-            placeholder="e.g. Diabetes"
+            placeholder="Condition (e.g. Diabetes)"
           />
         </div>
-        {/* Recruitment Status */}
         <div>
-          <label>Recruitment Status</label>
-          <select
-            value={statusFilter}
-            onChange={(e) => setStatusFilter(e.target.value)}
-            className="input w-full"
-          >
-            <option value="">Any</option>
-            <option>Recruiting</option>
-            <option>Not yet recruiting</option>
-            <option>Active, not recruiting</option>
-          </select>
-        </div>
-        {/* ZIP Code */}
-        <div>
-          <label>ZIP Code</label>
+          <label htmlFor="zip" className="sr-only">ZIP Code</label>
           <input
+            id="zip"
             type="text"
             value={zip}
-            onChange={(e) => setZip(e.target.value)}
-            className="input w-full"
-            placeholder="e.g. 32207"
+            onChange={e => setZip(e.target.value)}
+            className="input w-32"
+            placeholder="ZIP code"
           />
         </div>
-        {/* Radius */}
-        <div>
-          <label>Radius (miles)</label>
-          <input
-            type="number"
-            value={radius}
-            onChange={(e) => setRadius(e.target.value === "" ? "" : parseInt(e.target.value))}
-            className="input w-full"
-          />
-        </div>
-        {/* Age */}
-        <div>
-          <label>Age</label>
-          <input
-            type="number"
-            value={age}
-            onChange={(e) => setAge(e.target.value === "" ? "" : parseInt(e.target.value))}
-            className="input w-full"
-          />
-        </div>
-        {/* Gender */}
-        <div>
-          <label>Gender</label>
-          <select
-            value={gender}
-            onChange={(e) => setGender(e.target.value)}
-            className="input w-full"
-          >
-            <option value="">Any</option>
-            <option>Male</option>
-            <option>Female</option>
-          </select>
-        </div>
-        {/* Trial Phase */}
-        <div>
-          <label>Trial Phase</label>
-          <select
-            value={phase}
-            onChange={(e) => setPhase(e.target.value)}
-            className="input w-full"
-          >
-            <option value="">Any</option>
-            <option>Early Phase 1</option>
-            <option>Phase 1</option>
-            <option>Phase 2</option>
-            <option>Phase 3</option>
-            <option>Phase 4</option>
-            <option>Not Applicable</option>
-          </select>
-        </div>
-        {/* Submit */}
-        <div className="md:col-span-2 text-right">
-          <button type="submit" className="btn">
-            {loading ? "Searching…" : "Search"}
-          </button>
-        </div>
+        <button type="submit" className="btn px-6">{loading ? "Searching…" : "Search"}</button>
       </form>
 
-      {/* Error */}
+      {/* Error message */}
       {error && <p className="text-red-500 mb-4">Error: {error}</p>}
 
-      {/* Results */}
-      <div className="space-y-4">
-        {trials.map((trial) => (
-          <div key={trial.id} className="p-4 border rounded">
-            <h2 className="font-semibold">{trial.title}</h2>
-            <p>Status: {trial.status}</p>
-            <p>Phase: {trial.phase.join(", ") || "N/A"}</p>
-            <p>
-              Age: {trial.ageRange.min} – {trial.ageRange.max}
-            </p>
-            <p>Gender: {trial.gender || "Any"}</p>
-            <p>Locations:</p>
-            <ul className="list-disc list-inside">
-              {trial.locations.map((loc, i) => (
-                <li key={i}>
-                  {loc.city}, {loc.state}, {loc.country}
-                </li>
-              ))}
-            </ul>
-          </div>
+      {/* Display results */}
+      <div className="space-y-6">
+        {trials.map(trial => (
+          <TrialCard key={trial.nctId} trial={trial} />
         ))}
       </div>
     </div>
