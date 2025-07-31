@@ -18,65 +18,92 @@ interface RawTrial {
   gender: string | null;
 }
 
+// Your Profile shape (partial)
+interface Profile {
+  zip?: string;
+  age?: number;
+  gender?: string;
+}
+
 export default function SearchPage() {
   const { status } = useSession();
+
+  // ——————————————————————————
+  // 1. Load user profile (age/gender/zip)
+  // ——————————————————————————
+  const [profile, setProfile] = useState<Profile | null>(null);
+  useEffect(() => {
+    if (status === "authenticated") {
+      fetch("/api/profile", { 
+        credentials: "include"   // ← ensure NextAuth cookie is sent
+      })
+        .then((res) => {
+          if (!res.ok) throw new Error(`Profile API error: ${res.status}`);
+          return res.json();
+        })
+        .then((data: Profile) => setProfile(data))
+        .catch((err) => console.error("Profile load error:", err));
+    }
+  }, [status]);
+
+  // ——————————————————————————
+  // 2. Search state
+  // ——————————————————————————
   const [trials, setTrials] = useState<(CardTrial & { updated: string })[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // Search fields: only Condition and ZIP code
   const [condition, setCondition] = useState("");
   const [zip, setZip] = useState("");
 
-  // Load saved profile on mount (ZIP only)
+  // Pre-fill ZIP from profile (once loaded)
   useEffect(() => {
-    if (status === "authenticated") {
-      fetch("/api/profile")
-        .then(res => res.json())
-        .then(profile => {
-          if (profile) {
-            setZip(profile.zip || "");
-          }
-        });
+    if (profile?.zip) {
+      setZip(profile.zip);
     }
-  }, [status]);
+  }, [profile]);
 
-  // Fetch trials with sorting and mapping
+  // ——————————————————————————
+  // 3. Fetch trials (includes age & gender)
+  // ——————————————————————————
   async function fetchTrials() {
     setLoading(true);
     setError(null);
 
     const params = new URLSearchParams();
     if (condition) params.append("condition", condition);
-    if (zip) params.append("location", zip);
+    if (zip)       params.append("location", zip);
+
+    // ← NEW: only append if profile values exist
+    if (profile?.age !== undefined)    params.append("age", String(profile.age));
+    if (profile?.gender)               params.append("gender", profile.gender);
 
     try {
       const res = await fetch(`/api/ctgov?${params.toString()}`);
       if (!res.ok) throw new Error(await res.text());
       const data = await res.json();
 
-      // Sort by most recent update first
       const raw: RawTrial[] = data.studies || [];
+      // Sort by recency
       raw.sort((a, b) => {
         const aTime = new Date(a.lastUpdateSubmitDate || a.startDate).getTime();
         const bTime = new Date(b.lastUpdateSubmitDate || b.startDate).getTime();
         return bTime - aTime;
       });
 
-      // Normalize to CardTrial shape
-      const mapped = raw.map(t => ({
-        nctId: t.id,
-        briefTitle: t.title,
-        locations: t.locations.map(({ city, state, country }) => ({ city, state, country })),
-        summary: t.conditions.join(", "),
-        badge: undefined,
-        status: t.status,
-        phase: t.phase,
-        ageRange: t.ageRange,
+      const mapped = raw.map((t) => ({
+        nctId:       t.id,
+        briefTitle:  t.title,
+        locations:   t.locations.map(({ city, state, country }) => ({ city, state, country })),
+        summary:     t.conditions.join(", "),
+        badge:       undefined,
+        status:      t.status,
+        phase:       t.phase,
+        ageRange:    t.ageRange,
         keyEligibility: {},
-        enrollment: undefined,
-        updated: t.lastUpdateSubmitDate || t.startDate,
-      })) as (CardTrial & { updated: string })[];
+        enrollment:  undefined,
+        updated:     t.lastUpdateSubmitDate || t.startDate,
+      }));
 
       setTrials(mapped);
     } catch (err: unknown) {
@@ -88,67 +115,75 @@ export default function SearchPage() {
     }
   }
 
-  // Handle search form submit
+  // ——————————————————————————
+  // 4. Handle form submit
+  // ——————————————————————————
   const handleFilters = async (e: FormEvent) => {
     e.preventDefault();
-    if (status === "authenticated") {
-      await fetch("/api/profile", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ zip }),
-      });
-    }
     fetchTrials();
   };
 
-  // Require login for access
+  // Require login
   if (status === "unauthenticated") {
     return (
       <div className="p-8 text-center space-y-4">
         <p>Please sign in to search trials.</p>
-        <button className="btn" onClick={() => signIn()}>Sign In</button>
+        <button className="btn" onClick={() => signIn()}>
+          Sign In
+        </button>
       </div>
     );
   }
 
+  // ——————————————————————————
+  // 5. Render
+  // ——————————————————————————
   return (
     <div className="max-w-4xl mx-auto p-6">
-      <Link href="/" className="text-blue-500 mb-4 block">← Back to Home</Link>
+      <Link href="/" className="text-blue-500 mb-4 block">
+        ← Back to Home
+      </Link>
       <h1 className="text-2xl font-bold mb-4">Search Clinical Trials</h1>
 
-      {/* Search bar: Condition + ZIP */}
+      {/* Search bar */}
       <form onSubmit={handleFilters} className="flex gap-4 mb-6">
         <div className="flex-1">
-          <label htmlFor="condition" className="sr-only">Condition</label>
+          <label htmlFor="condition" className="sr-only">
+            Condition
+          </label>
           <input
             id="condition"
             type="text"
             value={condition}
-            onChange={e => setCondition(e.target.value)}
+            onChange={(e) => setCondition(e.target.value)}
             className="input w-full"
             placeholder="Condition (e.g. Diabetes)"
           />
         </div>
         <div>
-          <label htmlFor="zip" className="sr-only">ZIP Code</label>
+          <label htmlFor="zip" className="sr-only">
+            ZIP Code
+          </label>
           <input
             id="zip"
             type="text"
             value={zip}
-            onChange={e => setZip(e.target.value)}
+            onChange={(e) => setZip(e.target.value)}
             className="input w-32"
             placeholder="ZIP code"
           />
         </div>
-        <button type="submit" className="btn px-6">{loading ? "Searching…" : "Search"}</button>
+        <button type="submit" className="btn px-6">
+          {loading ? "Searching…" : "Search"}
+        </button>
       </form>
 
-      {/* Error message */}
+      {/* Error */}
       {error && <p className="text-red-500 mb-4">Error: {error}</p>}
 
-      {/* Display results */}
+      {/* Results */}
       <div className="space-y-6">
-        {trials.map(trial => (
+        {trials.map((trial) => (
           <TrialCard key={trial.nctId} trial={trial} />
         ))}
       </div>

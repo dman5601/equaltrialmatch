@@ -1,19 +1,14 @@
 // api/index.js
-// Load .env into process.env
 require('dotenv').config();
-
 const express = require('express');
 const cors = require('cors');
 const { Pool } = require('pg');
 const axios = require('axios');
 
 const app = express();
-
-// Middleware
 app.use(cors());
 app.use(express.json());
 
-// PostgreSQL connection pool
 const pool = new Pool({
   host:     process.env.PGHOST,
   port:     Number(process.env.PGPORT),
@@ -22,12 +17,10 @@ const pool = new Pool({
   database: process.env.PGDATABASE,
 });
 
-// Health-check endpoint
 app.get('/', (_req, res) => {
   res.json({ message: 'API is running!' });
 });
 
-// Fetch up to 20 trials from local DB
 app.get('/trials', async (_req, res) => {
   try {
     const result = await pool.query('SELECT * FROM trials LIMIT 20');
@@ -38,74 +31,72 @@ app.get('/trials', async (_req, res) => {
   }
 });
 
-/**
- * GET /ctgov
- * Proxy to ClinicalTrials.gov API v2 with token-based pagination.
- *
- * Query params:
- *  - condition (string)
- *  - status (string, e.g. Recruiting)
- *  - location (string, city/state/country)
- *  - pageToken (string, optional)
- *  - age (number, optional)
- *  - gender (string, optional)
- *  - phase (string, optional)
- */
 app.get('/ctgov', async (req, res) => {
   try {
     const { condition, status, location, pageToken, age, gender, phase } = req.query;
 
-    // Build CT.gov API parameters
     const params = {
-      format:     'json',
-      pageSize:   20,
-      countTotal: 'true',
+      format:                 'json',
+      pageSize:               20,
+      countTotal:             'true',
+      sort:                   'LastUpdatePostDate:desc',
+      'filter.overallStatus': 'RECRUITING,NOT_YET_RECRUITING',
+      fields: [
+        'protocolSection.identificationModule.nctId',
+        'protocolSection.identificationModule.briefTitle',
+        'protocolSection.statusModule.overallStatus',
+        'protocolSection.conditionsModule.conditions',
+        'protocolSection.contactsLocationsModule.locations',
+        'protocolSection.statusModule.startDateStruct.date',
+        'protocolSection.statusModule.lastUpdatePostDateStruct.date',
+        'protocolSection.designModule.phases',
+        'protocolSection.eligibilityModule.minimumAge',
+        'protocolSection.eligibilityModule.maximumAge',
+        'protocolSection.eligibilityModule.sex'
+      ].join(',')
     };
-    if (condition) params['query.cond']            = condition;
-    if (status)    params['filter.overallStatus']  = String(status).toUpperCase().replace(/ /g, '_');
-    if (location)  params['query.locn']            = location;
-    if (age)       params['filter.minAge']         = age;
-    if (gender)    params['filter.gender']         = gender;
-    if (phase)     params['filter.phase']          = String(phase).toUpperCase().replace(/ /g, '_');
-    if (pageToken) params.pageToken                = pageToken;
 
-    // Fetch from ClinicalTrials.gov v2
-    const ctUrl   = 'https://clinicaltrials.gov/api/v2/studies';
-    const response = await axios.get(ctUrl, { params });
+    if (condition) params['query.cond']           = condition;
+    if (status)    params['filter.overallStatus'] = String(status).toUpperCase().replace(/ /g, '_');
+    if (location)  params['query.locn']           = location;
+    if (age)       params['filter.minAge']        = age;
+    if (gender)    params['filter.gender']        = gender;
+    if (phase)     params['filter.phase']         = String(phase).toUpperCase().replace(/ /g, '_');
+    if (pageToken) params.pageToken               = pageToken;
 
-    // Map to simplified structure, now including location details, phase, ageRange & gender
+    const response = await axios.get('https://clinicaltrials.gov/api/v2/studies', { params });
+
     const studies = (response.data.studies || []).map(item => {
-      const ps         = item.protocolSection       || {};
-      const idMod      = ps.identificationModule    || {};
-      const statusMod  = ps.statusModule            || {};
-      const condMod    = ps.conditionsModule        || {};
-      const locMod     = ps.contactsLocationsModule || {};
-      const eligMod    = ps.eligibilityModule       || {};
-      const designMod  = ps.designModule            || {};
+      const ps        = item.protocolSection || {};
+      const idMod     = ps.identificationModule || {};
+      const statusMod = ps.statusModule       || {};
+      const condMod   = ps.conditionsModule    || {};
+      const locMod    = ps.contactsLocationsModule || {};
+      const eligMod   = ps.eligibilityModule  || {};
+      const designMod = ps.designModule       || {};
 
       return {
-        id:                 idMod.nctId,
-        title:              idMod.officialTitle || idMod.briefTitle || null,
-        status:             statusMod.overallStatus,
-        conditions:         condMod.conditions || [],
-        // full location object for each site
-        locations:          (locMod.locations || []).map(l => ({
-                              facility: l.locationFacility,
-                              city:     l.locationCity,
-                              state:    l.locationState,
-                              country:  l.locationCountry
-                            })),
-        startDate:          statusMod.startDate,
-        lastUpdateSubmitDate: statusMod.lastUpdateSubmitDate || null,
-        phase:              designMod.phaseList?.phase || [],
-        ageRange:           { min: eligMod.minimumAge, max: eligMod.maximumAge },
-        gender:             eligMod.gender || null,
+        id:                   idMod.nctId,
+        title:                idMod.briefTitle || null,
+        status:               statusMod.overallStatus,
+        conditions:           condMod.conditions || [],
+        locations:            (locMod.locations || []).map(l => ({
+                                facility: l.facility,
+                                city:     l.city,
+                                state:    l.state,
+                                country:  l.country
+                              })),
+        startDate:            statusMod.startDateStruct?.date,
+        lastUpdateSubmitDate: statusMod.lastUpdatePostDateStruct?.date || null,
+        phase:                designMod.phases || [],
+        ageRange:             { min: eligMod.minimumAge, max: eligMod.maximumAge },
+        gender:               eligMod.sex || null,
       };
     });
 
     res.json({
-      totalCount:     response.data.totalCount,
-      nextPageToken:  response.data.nextPageToken || null,
+      totalCount:    response.data.totalCount,
+      nextPageToken: response.data.nextPageToken || null,
       studies,
     });
   } catch (err) {
@@ -114,6 +105,5 @@ app.get('/ctgov', async (req, res) => {
   }
 });
 
-// Start server
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, () => console.log(`Server listening on port ${PORT}`));
