@@ -1,9 +1,13 @@
 // api/index.js
 require('dotenv').config();
-const express = require('express');
-const cors = require('cors');
-const { Pool } = require('pg');
-const axios = require('axios');
+const express   = require('express');
+const cors      = require('cors');
+const { Pool }  = require('pg');
+const axios     = require('axios');
+const NodeCache = require('node-cache');
+
+// Cache CT.gov JSON payloads for 5 minutes
+const ctCache = new NodeCache({ stdTTL: 300, checkperiod: 60 });
 
 const app = express();
 app.use(cors());
@@ -31,10 +35,14 @@ app.get('/trials', async (_req, res) => {
   }
 });
 
+// —————————————————————————————————————————
+// Proxy to ClinicalTrials.gov with proper data-only caching
+// —————————————————————————————————————————
 app.get('/ctgov', async (req, res) => {
   try {
     const { condition, status, location, pageToken, age, gender, phase } = req.query;
 
+    // Build CT.gov query params
     const params = {
       format:                 'json',
       pageSize:               20,
@@ -56,6 +64,7 @@ app.get('/ctgov', async (req, res) => {
       ].join(',')
     };
 
+    // Override with user filters
     if (condition) params['query.cond']           = condition;
     if (status)    params['filter.overallStatus'] = String(status).toUpperCase().replace(/ /g, '_');
     if (location)  params['query.locn']           = location;
@@ -64,16 +73,29 @@ app.get('/ctgov', async (req, res) => {
     if (phase)     params['filter.phase']         = String(phase).toUpperCase().replace(/ /g, '_');
     if (pageToken) params.pageToken               = pageToken;
 
-    const response = await axios.get('https://clinicaltrials.gov/api/v2/studies', { params });
+    // Cache key based solely on params
+    const cacheKey = JSON.stringify(params);
+    let data = ctCache.get(cacheKey);
 
-    const studies = (response.data.studies || []).map(item => {
-      const ps        = item.protocolSection || {};
-      const idMod     = ps.identificationModule || {};
-      const statusMod = ps.statusModule       || {};
-      const condMod   = ps.conditionsModule    || {};
-      const locMod    = ps.contactsLocationsModule || {};
-      const eligMod   = ps.eligibilityModule  || {};
-      const designMod = ps.designModule       || {};
+    if (!data) {
+      // First time: fetch and cache only the JSON payload
+      const resp = await axios.get('https://clinicaltrials.gov/api/v2/studies', { params });
+      data = resp.data;
+      ctCache.set(cacheKey, data);
+      console.log('Fetched CT.gov and cached:', cacheKey);
+    } else {
+      console.log('Cache hit for /ctgov:', cacheKey);
+    }
+
+    // Map the JSON payload to your simplified structure
+    const studies = (data.studies || []).map(item => {
+      const ps        = item.protocolSection            || {};
+      const idMod     = ps.identificationModule         || {};
+      const statusMod = ps.statusModule                || {};
+      const condMod   = ps.conditionsModule             || {};
+      const locMod    = ps.contactsLocationsModule      || {};
+      const eligMod   = ps.eligibilityModule            || {};
+      const designMod = ps.designModule                 || {};
 
       return {
         id:                   idMod.nctId,
@@ -94,14 +116,19 @@ app.get('/ctgov', async (req, res) => {
       };
     });
 
-    res.json({
-      totalCount:    response.data.totalCount,
-      nextPageToken: response.data.nextPageToken || null,
+    // Return mapped results
+    return res.json({
+      totalCount:    data.totalCount,
+      nextPageToken: data.nextPageToken || null,
       studies,
     });
+
   } catch (err) {
     console.error('CT.gov API error:', err.response?.status, err.response?.data || err.message);
-    res.status(500).json({ error: 'Failed to fetch from ClinicalTrials.gov', details: err.message });
+    return res.status(500).json({
+      error:   'Failed to fetch from ClinicalTrials.gov',
+      details: err.message
+    });
   }
 });
 
