@@ -1,7 +1,8 @@
 // src/components/TrialCard.tsx
 import Link from "next/link";
+import { useEffect, useMemo, useState } from "react";
 import { useSession, signIn } from "next-auth/react";
-import { useState, useEffect } from "react";
+import { useSavedTrials } from "@/context/SavedTrialsContext";
 
 export type Trial = {
   nctId: string;
@@ -13,41 +14,40 @@ export type Trial = {
   phase: string[]; // e.g. ["Phase 3"]
   ageRange: { min: string; max: string }; // e.g. { min: "18", max: "65" }
   keyEligibility?: {
-    disqualifiers?: string[];    // e.g. ["Bipolar", "Schizophrenia"]
-    mustNotBeTaking?: string[];   // e.g. ["Psychotropics"]
+    disqualifiers?: string[];
+    mustNotBeTaking?: string[];
   };
-  enrollment?: number;            // e.g. 332
-  /** ISO date string when this trial was last updated on ct.gov */
-  updated: string;
+  enrollment?: number;
+  updated: string; // ISO date
 };
 
 export default function TrialCard({ trial }: { trial: Trial }) {
-  const { data: session } = useSession();
-  const [saved, setSaved] = useState(false);
+  const { status } = useSession();
+  const { ready, isSaved, toggle } = useSavedTrials();
+
+  // Local visual state mirrors provider state for instant feedback
+  const savedFromProvider = useMemo(() => (ready ? isSaved(trial.nctId) : false), [ready, isSaved, trial.nctId]);
+  const [saved, setSaved] = useState<boolean>(false);
 
   useEffect(() => {
-    if (!session) return;
-    // TODO: fetch saved-trials list and setSaved(trial.nctId) if already saved
-  }, [session, trial.nctId]);
+    if (ready) setSaved(savedFromProvider);
+  }, [ready, savedFromProvider]);
 
-  const toggleSave = async () => {
-    if (!session) return signIn();
-    const method = saved ? "DELETE" : "POST";
-    await fetch("/api/saved-trials", {
-      method,
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ nctId: trial.nctId }),
-    });
-    setSaved(!saved);
+  const onToggle = async () => {
+    if (status !== "authenticated") return signIn();
+    setSaved(prev => !prev); // instant feedback
+    try {
+      await toggle(trial.nctId);
+    } catch {
+      setSaved(prev => !prev); // rollback visual state if API failed
+    }
   };
 
-  // Primary location
   const primary = trial.locations[0];
   const locationLabel = primary
     ? [primary.city, primary.state].filter(Boolean).join(", ")
     : "Not specified";
 
-  // Eligibility sub-list
   const eligibilityItems: React.ReactNode[] = [];
   if (trial.keyEligibility?.disqualifiers?.length) {
     eligibilityItems.push(
@@ -75,7 +75,7 @@ export default function TrialCard({ trial }: { trial: Trial }) {
           >
             {trial.briefTitle}
           </Link>
-          <button onClick={toggleSave} className="btn ml-2">
+          <button onClick={onToggle} className="btn ml-2" aria-label={saved ? "Unsave trial" : "Save trial"}>
             {saved ? "★" : "☆"}
           </button>
         </div>
@@ -83,9 +83,7 @@ export default function TrialCard({ trial }: { trial: Trial }) {
       </div>
 
       {/* SUMMARY */}
-      <p className="text-sm text-gray-700 my-4 line-clamp-2">
-        {trial.summary}
-      </p>
+      <p className="text-sm text-gray-700 my-4 line-clamp-2">{trial.summary}</p>
 
       {/* BADGE */}
       {trial.badge && (
@@ -96,27 +94,18 @@ export default function TrialCard({ trial }: { trial: Trial }) {
 
       {/* CORE DETAILS */}
       <ul className="mt-4 space-y-1 text-sm text-gray-800">
-        <li>
-          <strong>Status:</strong> {trial.status}
-        </li>
-        <li>
-          <strong>Phase:</strong> {trial.phase.join(", ") || "N/A"}
-        </li>
-        <li>
-          <strong>Age:</strong> {trial.ageRange.min} – {trial.ageRange.max}
-        </li>
+        <li><strong>Status:</strong> {trial.status}</li>
+        <li><strong>Phase:</strong> {trial.phase.join(", ") || "N/A"}</li>
+        <li><strong>Age:</strong> {trial.ageRange.min} – {trial.ageRange.max}</li>
         {eligibilityItems.length > 0 && (
           <li>
             <strong>Key Eligibility:</strong>
-            <ul className="list-disc list-inside ml-4">
-              {eligibilityItems}
-            </ul>
+            <ul className="list-disc list-inside ml-4">{eligibilityItems}</ul>
           </li>
         )}
         {typeof trial.enrollment === "number" && (
           <li>
-            <strong>Participants Needed:</strong>{" "}
-            {trial.enrollment.toLocaleString()}
+            <strong>Participants Needed:</strong> {trial.enrollment.toLocaleString()}
           </li>
         )}
       </ul>
@@ -124,19 +113,12 @@ export default function TrialCard({ trial }: { trial: Trial }) {
       {/* LAST UPDATED */}
       <div className="mt-4 text-xs text-gray-500">
         Last Updated:{" "}
-        {new Date(trial.updated).toLocaleDateString("en-US", {
-          month: "short",
-          day: "numeric",
-          year: "numeric",
-        })}
+        {new Date(trial.updated).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}
       </div>
 
       {/* CTA */}
       <div className="mt-6 flex justify-between items-center">
-        <Link
-          href={`/trials/${trial.nctId}`}
-          className="text-blue-600 hover:underline font-medium"
-        >
+        <Link href={`/trials/${trial.nctId}`} className="text-blue-600 hover:underline font-medium">
           Learn More →
         </Link>
       </div>
