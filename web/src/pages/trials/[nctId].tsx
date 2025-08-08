@@ -1,249 +1,179 @@
 // web/src/pages/trials/[nctId].tsx
-import { useRouter } from 'next/router';
-import { useEffect, useState } from 'react';
-import dynamic from 'next/dynamic';
+import { useRouter } from "next/router";
+import { useEffect, useMemo, useState } from "react";
+import dynamic from "next/dynamic";
+import Link from "next/link";
 
-// ——— Dynamic imports for React-Leaflet (client only) ———
-const MapContainer = dynamic(
-  () => import('react-leaflet').then((m) => m.MapContainer),
-  { ssr: false }
-);
-const TileLayer = dynamic(
-  () => import('react-leaflet').then((m) => m.TileLayer),
-  { ssr: false }
-);
-const Marker = dynamic(
-  () => import('react-leaflet').then((m) => m.Marker),
-  { ssr: false }
-);
-const Popup = dynamic(
-  () => import('react-leaflet').then((m) => m.Popup),
-  { ssr: false }
-);
+// Leaflet components must be dynamically imported (no SSR)
+const MapContainer = dynamic(() => import("react-leaflet").then(m => m.MapContainer), { ssr: false });
+const TileLayer    = dynamic(() => import("react-leaflet").then(m => m.TileLayer), { ssr: false });
+const Marker       = dynamic(() => import("react-leaflet").then(m => m.Marker), { ssr: false });
+const Popup        = dynamic(() => import("react-leaflet").then(m => m.Popup), { ssr: false });
 
-// ——— Helper to format dates ———
-function formatDate(dateStr: string) {
-  if (!dateStr) return 'N/A';
-  const d = new Date(dateStr);
-  return d.toLocaleDateString(undefined, {
-    year:  'numeric',
-    month: 'short',
-    day:   'numeric',
-  });
-}
+// If your markers don't show up, ensure leaflet CSS is included globally (e.g., in _app.tsx):
+// import "leaflet/dist/leaflet.css";
 
-// ——— Location + Trial types ———
-interface Location {
+type Location = {
   facility: string;
-  city:     string;
-  state:    string;
-  country:  string;
-  geoPoint: { lat: number; lon: number };
+  city: string;
+  state: string;
+  country: string;
+  geoPoint?: { lat: number; lon: number };
+};
+
+type Trial = {
+  nctId: string;
+  briefTitle: string;
+  status: string;
+  startDate: string;
+  lastUpdateSubmitDate: string | null;
+  conditions: string[];
+  phase: string[];
+  ageRange: { min: string; max: string };
+  gender: string | null;
+  summary: string;
+  locations: Location[];
+};
+
+type MarkerPoint = { lat: number; lon: number; label: string };
+
+function toSiteMarkers(locations: Location[]): MarkerPoint[] {
+  if (!Array.isArray(locations)) return [];
+  const markers: MarkerPoint[] = [];
+  for (const loc of locations) {
+    const gp = loc?.geoPoint;
+    if (gp && typeof gp.lat === "number" && typeof gp.lon === "number") {
+      const label = [loc.facility, loc.city, loc.state, loc.country].filter(Boolean).join(", ");
+      markers.push({ lat: gp.lat, lon: gp.lon, label });
+    }
+  }
+  return markers;
 }
 
-interface DetailTrial {
-  nctId:               string;
-  briefTitle:          string;
-  status:              string;
-  conditions:          string[];
-  interventions:       string[];
-  eligibilityCriteria: string[];
-  locations:           Location[];
-  startDate:           string;
-  updated:             string;
-  phase:               string[];
-  ageRange:            { min: string; max: string };
-  gender:              string | null;
-  outcomes:            { title: string; description: string }[];
-  documents:           { type: string; url: string; category: string }[];
-}
-
-// ——— Component ———
 export default function TrialDetailPage() {
   const router = useRouter();
   const { nctId } = router.query as { nctId?: string };
 
-  const [trial,   setTrial]   = useState<DetailTrial | null>(null);
-  const [error,   setError]   = useState<string | null>(null);
-  const [loading, setLoading] = useState(true);
+  const [trial, setTrial] = useState<Trial | null>(null);
+  const [loading, setLoading] = useState<boolean>(true);
+  const [error, setError] = useState<string | null>(null);
+  const [mounted, setMounted] = useState(false); // ensure client-side before rendering map
 
-  // Fetch trial detail
   useEffect(() => {
-    if (!nctId) return;
-    setLoading(true);
-    setError(null);
-
-    fetch(`/api/studies/${nctId}`)
-      .then(async (res) => {
-        if (!res.ok) throw new Error(`Status ${res.status}: ${await res.text()}`);
-        return (await res.json()) as DetailTrial;
-      })
-      .then((data) => setTrial(data))
-      .catch((err) => setError(err instanceof Error ? err.message : String(err)))
-      .finally(() => setLoading(false));
-  }, [nctId]);
-
-  // Client‐only: configure Leaflet icon URLs
-  useEffect(() => {
-    if (typeof window === 'undefined') return;
-    import('leaflet').then((mod) => {
-      const L = mod.default;
-      L.Icon.Default.mergeOptions({
-        iconRetinaUrl: '/marker-icon-2x.png',
-        iconUrl:       '/marker-icon.png',
-        shadowUrl:     '/marker-shadow.png',
-      });
-    });
+    setMounted(true);
   }, []);
 
-  // ——— Loading & error states ———
-  if (!nctId)    return <p className="p-6">Invalid trial ID.</p>;
-  if (loading)   return <p className="p-6">Loading trial details…</p>;
-  if (error)     return <p className="p-6 text-red-600">Error: {error}</p>;
-  if (!trial)    return <p className="p-6">No trial found.</p>;
+  useEffect(() => {
+    // ✅ Narrow nctId to a definite string for the fetch
+    if (typeof nctId !== "string" || !nctId) return;
+    let cancelled = false;
+    const id = nctId;
 
-  // Map center at first site (or [0,0])
-  const center: [number, number] = trial.locations.length
-    ? [trial.locations[0].geoPoint.lat, trial.locations[0].geoPoint.lon]
-    : [0, 0];
+    async function load(studyId: string) {
+      setLoading(true);
+      setError(null);
+      try {
+        const res = await fetch(`/api/studies/${encodeURIComponent(studyId)}`);
+        if (!res.ok) throw new Error(`Failed to fetch study: ${res.status}`);
+        const data = (await res.json()) as Trial;
+        if (!cancelled) setTrial(data);
+      } catch (e: unknown) {
+        const msg = e instanceof Error ? e.message : "Unknown error";
+        if (!cancelled) setError(msg);
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    }
+
+    load(id);
+    return () => { cancelled = true; };
+  }, [nctId]);
+
+  const markers = useMemo(() => toSiteMarkers(trial?.locations || []), [trial]);
+  const defaultCenter: [number, number] = markers.length
+    ? [markers[0].lat, markers[0].lon]
+    : [39.5, -98.35]; // continental US fallback
 
   return (
-    <div className="max-w-4xl mx-auto p-6 space-y-8">
-      {/* — Overview — */}
-      <header className="space-y-2">
-        <h1 className="text-3xl font-bold">{trial.briefTitle}</h1>
-        <p className="text-gray-600">NCT ID: {trial.nctId}</p>
-        <div className="flex items-center space-x-4">
-          <span className="px-3 py-1 rounded-full bg-green-100 text-green-800">
-            {trial.status}
-          </span>
-          <span className="text-sm text-gray-500">
-            Last updated: {formatDate(trial.updated)}
-          </span>
-        </div>
-      </header>
+    <div className="max-w-4xl mx-auto p-6 space-y-6">
+      <Link href="/search" className="text-blue-600 hover:underline">
+        ← Back to Search
+      </Link>
 
-      {/* — Key Facts — */}
-      <section>
-        <h2 className="text-2xl font-semibold mb-4">Key Facts</h2>
-        <div className="grid grid-cols-2 gap-4">
-          <div className="p-4 border rounded">
-            <h3 className="font-medium">Phase</h3>
-            <p>{trial.phase.join(', ') || 'N/A'}</p>
-          </div>
-          <div className="p-4 border rounded">
-            <h3 className="font-medium">Start Date</h3>
-            <p>{formatDate(trial.startDate)}</p>
-          </div>
-          <div className="p-4 border rounded">
-            <h3 className="font-medium">Age Range</h3>
-            <p>{trial.ageRange.min} – {trial.ageRange.max}</p>
-          </div>
-          <div className="p-4 border rounded">
-            <h3 className="font-medium">Gender</h3>
-            <p>{trial.gender || 'All'}</p>
-          </div>
-        </div>
-      </section>
+      {loading && <p>Loading trial…</p>}
+      {error && <p className="text-red-600">Error: {error}</p>}
+      {!loading && !error && !trial && <p>No study found.</p>}
 
-      {/* — Conditions — */}
-      <section>
-        <h2 className="text-2xl font-semibold mb-2">Conditions</h2>
-        <ul className="list-disc list-inside text-gray-700">
-          {trial.conditions.map((c, i) => <li key={i}>{c}</li>)}
-        </ul>
-      </section>
+      {trial && (
+        <>
+          <header>
+            <h1 className="text-2xl font-bold">{trial.briefTitle}</h1>
+            <p className="text-sm text-gray-600 mt-1">
+              NCT ID: {trial.nctId} · Status: {trial.status}
+            </p>
+          </header>
 
-      {/* — Interventions — */}
-      <section>
-        <h2 className="text-2xl font-semibold mb-2">Interventions</h2>
-        {trial.interventions.length > 0
-          ? <ul className="list-disc list-inside text-gray-700">
-              {trial.interventions.map((iv, idx) => <li key={idx}>{iv}</li>)}
-            </ul>
-          : <p className="text-gray-600">No interventions listed.</p>}
-      </section>
+          <section className="space-y-2">
+            <h2 className="text-xl font-semibold">Summary</h2>
+            <p className="text-gray-800 whitespace-pre-wrap">{trial.summary || "No summary provided."}</p>
+          </section>
 
-      {/* — Eligibility Criteria — */}
-      <section>
-        <h2 className="text-2xl font-semibold mb-2">Eligibility Criteria</h2>
-        {trial.eligibilityCriteria.length > 0
-          ? <ul className="list-disc list-inside text-gray-700">
-              {trial.eligibilityCriteria.map((crit, idx) => <li key={idx}>{crit}</li>)}
-            </ul>
-          : <p className="text-gray-600">No criteria available.</p>}
-      </section>
-
-      {/* — Outcomes — */}
-      <section>
-        <h2 className="text-2xl font-semibold mb-2">Outcomes</h2>
-        {trial.outcomes.length > 0
-          ? <ul className="list-disc list-inside text-gray-700">
-              {trial.outcomes.map((o, idx) =>
-                <li key={idx}><strong>{o.title}</strong>: {o.description}</li>
-              )}
-            </ul>
-          : <p className="text-gray-600">No outcomes recorded.</p>}
-      </section>
-
-      {/* — Documents — */}
-      <section>
-        <h2 className="text-2xl font-semibold mb-2">Documents</h2>
-        {trial.documents.length > 0
-          ? <ul className="list-disc list-inside text-gray-700">
-              {trial.documents.map((doc, idx) =>
-                <li key={idx}>
-                  <a
-                    href={doc.url}
-                    className="text-blue-600"
-                    target="_blank"
-                    rel="noopener noreferrer"
-                  >
-                    {doc.type || doc.category}
-                  </a>
+          <section className="grid md:grid-cols-2 gap-6">
+            <div className="space-y-2">
+              <h3 className="text-lg font-semibold">Key Details</h3>
+              <ul className="text-sm text-gray-800 space-y-1">
+                <li><strong>Conditions:</strong> {trial.conditions?.join(", ") || "N/A"}</li>
+                <li><strong>Phase:</strong> {trial.phase?.join(", ") || "N/A"}</li>
+                <li><strong>Age:</strong> {trial.ageRange.min} – {trial.ageRange.max}</li>
+                <li><strong>Gender:</strong> {trial.gender || "All"}</li>
+                <li>
+                  <strong>Updated:</strong>{" "}
+                  {new Date(trial.lastUpdateSubmitDate || trial.startDate).toLocaleDateString("en-US", {
+                    month: "short",
+                    day: "numeric",
+                    year: "numeric",
+                  })}
                 </li>
+              </ul>
+            </div>
+
+            <div className="space-y-2">
+              <h3 className="text-lg font-semibold">Locations</h3>
+              {trial.locations?.length ? (
+                <ul className="text-sm text-gray-800 space-y-1">
+                  {trial.locations.map((l, idx) => (
+                    <li key={idx}>
+                      {[l.facility, l.city, l.state, l.country].filter(Boolean).join(", ")}
+                    </li>
+                  ))}
+                </ul>
+              ) : (
+                <p className="text-sm text-gray-500">No locations listed.</p>
               )}
-            </ul>
-          : <p className="text-gray-600">No documents available.</p>}
-      </section>
+            </div>
+          </section>
 
-      {/* — Study Sites — */}
-      <section>
-        <h2 className="text-2xl font-semibold mb-2">Study Sites</h2>
-        <p className="mb-2 text-gray-700">{trial.locations.length} site(s) enrolled</p>
-        <ul className="list-disc list-inside text-gray-700 space-y-1">
-          {trial.locations.map((loc, i) =>
-            <li key={i}>{loc.city}, {loc.state}, {loc.country}</li>
-          )}
-        </ul>
-      </section>
-
-      {/* — Interactive Map — */}
-      <section>
-        <h2 className="text-2xl font-semibold mb-2">Location Map</h2>
-        <MapContainer
-          center={center}
-          zoom={10}
-          scrollWheelZoom={false}
-          style={{ height: '400px', width: '100%' }}
-        >
-          <TileLayer
-            attribution='&copy; <a href="https://osm.org/copyright">OpenStreetMap</a>'
-            url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
-          />
-          {trial.locations.map((loc, idx) => (
-            <Marker
-              key={idx}
-              position={[loc.geoPoint.lat, loc.geoPoint.lon]}
-            >
-              <Popup>
-                <strong>{loc.facility}</strong><br />
-                {loc.city}, {loc.state}
-              </Popup>
-            </Marker>
-          ))}
-        </MapContainer>
-      </section>
+          <section className="space-y-3">
+            <h3 className="text-lg font-semibold">Map of Study Sites</h3>
+            {mounted && markers.length > 0 ? (
+              <div className="w-full" style={{ height: 360 }}>
+                <MapContainer center={defaultCenter} zoom={6} style={{ height: "100%", width: "100%" }}>
+                  <TileLayer url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" />
+                  {markers.map((m, idx) => (
+                    <Marker key={idx} position={[m.lat, m.lon]}>
+                      <Popup>{m.label || "Study site"}</Popup>
+                    </Marker>
+                  ))}
+                </MapContainer>
+              </div>
+            ) : (
+              <div className="text-sm text-gray-500">
+                No mappable site coordinates provided for this study.
+              </div>
+            )}
+          </section>
+        </>
+      )}
     </div>
   );
 }

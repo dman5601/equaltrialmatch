@@ -16,7 +16,7 @@ interface RawTrial {
   phase: string[];
   ageRange: { min: string; max: string };
   gender: string | null;
-  nearestDistanceMi?: number; // NEW
+  nearestDistanceMi?: number;
 }
 
 // Your Profile shape (partial)
@@ -26,6 +26,8 @@ interface Profile {
   age?: number;
   gender?: string;
 }
+
+type SortMode = "recent" | "distance" | "phase";
 
 export default function SearchPage() {
   const { status } = useSession();
@@ -55,18 +57,23 @@ export default function SearchPage() {
 
   const [condition, setCondition] = useState("");
   const [zip, setZip] = useState("");
-  const [radius, setRadius] = useState<string>(""); // NEW
+  const [radius, setRadius] = useState<string>("");
+  const [sort, setSort] = useState<SortMode>("recent");
 
-  // Pre-fill from profile
+  // Pre-fill from profile + choose default sort
   useEffect(() => {
-    if (profile?.zip) setZip(profile.zip);
+    if (profile?.zip) {
+      setZip(profile.zip);
+      // If user has a ZIP, default to distance
+      setSort("distance");
+    }
     if (typeof profile?.radius === "number" && profile.radius > 0) {
       setRadius(String(profile.radius));
     }
   }, [profile]);
 
   // ——————————————————————————
-  // 3. Fetch trials (includes age & gender & radius)
+  // 3. Fetch trials
   // ——————————————————————————
   async function fetchTrials() {
     setLoading(true);
@@ -75,7 +82,8 @@ export default function SearchPage() {
     const params = new URLSearchParams();
     if (condition) params.append("condition", condition);
     if (zip)       params.append("location", zip);
-    if (radius)    params.append("radius", radius); // NEW
+    if (radius)    params.append("radius", radius);
+    if (sort)      params.append("sort", sort);
 
     if (profile?.age !== undefined) params.append("age", String(profile.age));
     if (profile?.gender)            params.append("gender", profile.gender);
@@ -87,20 +95,8 @@ export default function SearchPage() {
 
       const raw: RawTrial[] = data.studies || [];
 
-      // Sort: by distance if radius provided, else by recency
-      if (radius) {
-        raw.sort(
-          (a, b) =>
-            (a.nearestDistanceMi ?? Number.POSITIVE_INFINITY) -
-            (b.nearestDistanceMi ?? Number.POSITIVE_INFINITY)
-        );
-      } else {
-        raw.sort((a, b) => {
-          const aTime = new Date(a.lastUpdateSubmitDate || a.startDate).getTime();
-          const bTime = new Date(b.lastUpdateSubmitDate || b.startDate).getTime();
-          return bTime - aTime;
-        });
-      }
+      // We let the server sort, but if needed we can still apply a client sort:
+      // (Keeping it simple: trust server.)
 
       const mapped = raw.map((t) => ({
         nctId:       t.id,
@@ -113,7 +109,7 @@ export default function SearchPage() {
         ageRange:    t.ageRange,
         keyEligibility: {},
         enrollment:  undefined,
-        nearestDistanceMi: t.nearestDistanceMi, // NEW
+        nearestDistanceMi: t.nearestDistanceMi,
         updated:     t.lastUpdateSubmitDate || t.startDate,
       }));
 
@@ -127,15 +123,11 @@ export default function SearchPage() {
     }
   }
 
-  // ——————————————————————————
-  // 4. Handle form submit
-  // ——————————————————————————
   const handleFilters = async (e: FormEvent) => {
     e.preventDefault();
     fetchTrials();
   };
 
-  // Require login
   if (status === "unauthenticated") {
     return (
       <div className="p-8 text-center space-y-4">
@@ -148,8 +140,10 @@ export default function SearchPage() {
   }
 
   // ——————————————————————————
-  // 5. Render
+  // 4. Render
   // ——————————————————————————
+  const distanceDisabled = !zip; // no ZIP → can't do distance sort
+
   return (
     <div className="max-w-4xl mx-auto p-6">
       <Link href="/" className="text-blue-500 mb-4 block">
@@ -157,12 +151,9 @@ export default function SearchPage() {
       </Link>
       <h1 className="text-2xl font-bold mb-4">Search Clinical Trials</h1>
 
-      {/* Search bar */}
-      <form onSubmit={handleFilters} className="flex flex-wrap gap-4 mb-6">
+      <form onSubmit={handleFilters} className="flex flex-wrap gap-4 mb-6 items-end">
         <div className="flex-1 min-w-[220px]">
-          <label htmlFor="condition" className="sr-only">
-            Condition
-          </label>
+          <label htmlFor="condition" className="sr-only">Condition</label>
           <input
             id="condition"
             type="text"
@@ -172,10 +163,9 @@ export default function SearchPage() {
             placeholder="Condition (e.g. Diabetes)"
           />
         </div>
+
         <div>
-          <label htmlFor="zip" className="sr-only">
-            ZIP Code
-          </label>
+          <label htmlFor="zip" className="sr-only">ZIP Code</label>
           <input
             id="zip"
             type="text"
@@ -185,10 +175,9 @@ export default function SearchPage() {
             placeholder="ZIP code"
           />
         </div>
+
         <div>
-          <label htmlFor="radius" className="sr-only">
-            Radius (miles)
-          </label>
+          <label htmlFor="radius" className="sr-only">Radius (miles)</label>
           <input
             id="radius"
             type="number"
@@ -199,15 +188,28 @@ export default function SearchPage() {
             placeholder="Radius (mi)"
           />
         </div>
+
+        <div>
+          <label htmlFor="sort" className="sr-only">Sort by</label>
+          <select
+            id="sort"
+            className="input w-44"
+            value={sort}
+            onChange={(e) => setSort(e.target.value as SortMode)}
+          >
+            <option value="recent">Most recent</option>
+            <option value="distance" disabled={distanceDisabled}>Nearest</option>
+            <option value="phase">Phase (high → low)</option>
+          </select>
+        </div>
+
         <button type="submit" className="btn px-6">
           {loading ? "Searching…" : "Search"}
         </button>
       </form>
 
-      {/* Error */}
       {error && <p className="text-red-500 mb-4">Error: {error}</p>}
 
-      {/* Results */}
       <div className="space-y-6">
         {trials.map((trial) => (
           <TrialCard key={trial.nctId} trial={trial} />
