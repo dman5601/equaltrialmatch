@@ -1,8 +1,7 @@
 // src/components/TrialCard.tsx
 import Link from "next/link";
-import { useEffect, useMemo, useState } from "react";
 import { useSession, signIn } from "next-auth/react";
-import { useSavedTrials } from "@/context/SavedTrialsContext";
+import { useState, useEffect } from "react";
 
 export type Trial = {
   nctId: string;
@@ -14,35 +13,38 @@ export type Trial = {
   phase: string[]; // e.g. ["Phase 3"]
   ageRange: { min: string; max: string }; // e.g. { min: "18", max: "65" }
   keyEligibility?: {
-    disqualifiers?: string[];
-    mustNotBeTaking?: string[];
+    disqualifiers?: string[];    // e.g. ["Bipolar", "Schizophrenia"]
+    mustNotBeTaking?: string[];   // e.g. ["Psychotropics"]
   };
-  enrollment?: number;
-  updated: string; // ISO date
+  enrollment?: number;            // e.g. 332
+  /** ISO date string when this trial was last updated on ct.gov */
+  updated: string;
+  /** Computed on server when ZIP+radius provided */
+  nearestDistanceMi?: number;     // NEW
 };
 
 export default function TrialCard({ trial }: { trial: Trial }) {
-  const { status } = useSession();
-  const { ready, isSaved, toggle } = useSavedTrials();
-
-  // Local visual state mirrors provider state for instant feedback
-  const savedFromProvider = useMemo(() => (ready ? isSaved(trial.nctId) : false), [ready, isSaved, trial.nctId]);
-  const [saved, setSaved] = useState<boolean>(false);
+  const { data: session } = useSession();
+  const [saved, setSaved] = useState(false);
 
   useEffect(() => {
-    if (ready) setSaved(savedFromProvider);
-  }, [ready, savedFromProvider]);
+    if (!session) return;
+    // TODO: optionally pre-load saved state
+  }, [session, trial.nctId]);
 
-  const onToggle = async () => {
-    if (status !== "authenticated") return signIn();
-    setSaved(prev => !prev); // instant feedback
-    try {
-      await toggle(trial.nctId);
-    } catch {
-      setSaved(prev => !prev); // rollback visual state if API failed
-    }
+  const toggleSave = async () => {
+    if (!session) return signIn();
+    const method = saved ? "DELETE" : "POST";
+    await fetch(saved ? `/api/saved-trials/${encodeURIComponent(trial.nctId)}` : "/api/saved-trials", {
+      method,
+      credentials: "include",
+      headers: saved ? undefined : { "Content-Type": "application/json" },
+      body: saved ? undefined : JSON.stringify({ nctId: trial.nctId }),
+    });
+    setSaved(!saved);
   };
 
+  // Primary location
   const primary = trial.locations[0];
   const locationLabel = primary
     ? [primary.city, primary.state].filter(Boolean).join(", ")
@@ -75,7 +77,7 @@ export default function TrialCard({ trial }: { trial: Trial }) {
           >
             {trial.briefTitle}
           </Link>
-          <button onClick={onToggle} className="btn ml-2" aria-label={saved ? "Unsave trial" : "Save trial"}>
+          <button onClick={toggleSave} className="btn ml-2">
             {saved ? "★" : "☆"}
           </button>
         </div>
@@ -97,6 +99,9 @@ export default function TrialCard({ trial }: { trial: Trial }) {
         <li><strong>Status:</strong> {trial.status}</li>
         <li><strong>Phase:</strong> {trial.phase.join(", ") || "N/A"}</li>
         <li><strong>Age:</strong> {trial.ageRange.min} – {trial.ageRange.max}</li>
+        {typeof trial.nearestDistanceMi === "number" && (
+          <li><strong>Nearest site:</strong> {trial.nearestDistanceMi.toFixed(1)} mi</li>
+        )}
         {eligibilityItems.length > 0 && (
           <li>
             <strong>Key Eligibility:</strong>
