@@ -1,19 +1,29 @@
-// web/src/pages/_app.tsx
-import "@/styles/globals.css";
 import type { AppProps } from "next/app";
 import { SessionProvider } from "next-auth/react";
-import { SavedTrialsProvider } from "@/context/SavedTrialsContext";
-import Header from "@/components/Header";
+import "@/styles/globals.css";
+import { Inter } from "next/font/google";
+import Layout from "@/components/Layout";
 
-export default function App({ Component, pageProps }: AppProps) {
+const inter = Inter({
+  subsets: ["latin"],
+  display: "swap",
+  variable: "--font-inter",
+});
+
+export default function MyApp({
+  Component,
+  pageProps: { session, ...pageProps },
+}: AppProps) {
   return (
-    <SessionProvider session={pageProps.session}>
-      <SavedTrialsProvider>
-        <Header />
-        <main className="max-w-6xl mx-auto px-4 py-6">
+    <SessionProvider session={session}>
+      <div
+        className={inter.variable}
+        style={{ fontFamily: "var(--font-inter), ui-sans-serif, system-ui" }}
+      >
+        <Layout>
           <Component {...pageProps} />
-        </main>
-      </SavedTrialsProvider>
+        </Layout>
+      </div>
     </SessionProvider>
   );
 }
